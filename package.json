@@ -1,0 +1,44 @@
+{
+  "name": "agentcron",
+  "version": "0.1.0",
+  "description": "Share AI agent automations across Claude Code and Codex App",
+  "type": "module",
+  "bin": {
+    "agentcron": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts",
+    "test": "vitest run"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "keywords": [
+    "ai",
+    "automation",
+    "claude",
+    "codex",
+    "cron",
+    "agent"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "@iarna/toml": "^2.2.5",
+    "chalk": "^5.6.2",
+    "commander": "^14.0.3",
+    "cron-parser": "^5.5.0",
+    "gray-matter": "^4.0.3",
+    "inquirer": "^13.4.1",
+    "ora": "^9.3.0",
+    "rrule": "^2.8.1",
+    "tar": "^7.5.13"
+  },
+  "devDependencies": {
+    "@types/inquirer": "^9.0.9",
+    "@types/node": "^25.6.0",
+    "tsx": "^4.21.0",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.4"
+  }
+}
