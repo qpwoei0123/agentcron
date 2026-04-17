@@ -1,111 +1,71 @@
-import { readFileSync } from 'fs';
-import path from 'path';
 import ora from 'ora';
-import { ClaudeAdapter } from '../adapters/claude.js';
-import { CodexAdapter } from '../adapters/codex.js';
-import type { AgentAdapter } from '../adapters/types.js';
-import { detectAgents } from '../core/detector.js';
-import { fetchFromGitHub } from '../core/github.js';
-import { parseSkillMd, type Skill } from '../core/skill-parser.js';
-import { addToLock, getLockEntry } from '../lock/lockfile.js';
-import { header, info, success, warn } from '../utils/display.js';
-import { confirm, inputCwd, selectAgents } from '../utils/prompt.js';
+import inquirer from 'inquirer';
+import { existsSync, mkdirSync, writeFileSync } from 'fs';
+import path from 'path';
+import { homedir } from 'os';
+import { fetchRecipeList, fetchRecipeFiles, type RecipeInfo } from '../core/github.js';
+import { parseSkillMd } from '../core/skill-parser.js';
 
-export async function addCommand(repoSlug: string, options: { target?: string; cwd?: string }) {
-  const spinner = ora('Fetching ' + repoSlug + '...').start();
-
-  let fetchResult: Awaited<ReturnType<typeof fetchFromGitHub>> | undefined;
+export async function addCommand() {
+  const spinner = ora('Fetching recipe catalog...').start();
+  let recipes: RecipeInfo[];
   try {
-    fetchResult = await fetchFromGitHub(repoSlug);
+    recipes = await fetchRecipeList();
     spinner.stop();
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    spinner.fail(message);
+  } catch (err: any) {
+    spinner.fail('Failed to fetch recipes: ' + err.message);
     process.exit(1);
   }
-  if (!fetchResult) return;
 
-  const raw = readFileSync(fetchResult.skillMdPath, 'utf-8');
-  const { meta, prompt } = parseSkillMd(raw);
-
-  const auxiliaryFiles = new Map<string, string>();
-  for (const file of fetchResult.files) {
-    const basename = path.basename(file);
-    if (basename !== 'SKILL.md' && basename !== 'README.md' && basename !== 'LICENSE') {
-      const fullPath = path.join(fetchResult.directory, basename);
-      try {
-        auxiliaryFiles.set(basename, readFileSync(fullPath, 'utf-8'));
-      } catch {
-        // 텍스트 파일만 포함
-      }
-    }
-  }
-
-  const skill: Skill = { meta, prompt, auxiliaryFiles };
-
-  header(meta.name);
-  info(meta.description || '');
-  if (meta.schedule) info('Schedule: ' + meta.schedule);
-  console.log();
-
-  const existing = getLockEntry(meta.name);
-  if (existing) {
-    warn(meta.name + ' is already installed');
-    const shouldUpdate = await confirm('Update to latest?');
-    if (!shouldUpdate) return;
-  }
-
-  const agents = detectAgents();
-  info('Detected agents:');
-  for (const agent of agents) {
-    const version = agent.version ? ' v' + agent.version : '';
-    info('  ' + (agent.installed ? '✓' : '✗') + ' ' + agent.name + version);
-  }
-  console.log();
-
-  let selectedAgents;
-  if (options.target) {
-    const targetIds = options.target.split(',');
-    selectedAgents = agents.filter((agent) => targetIds.includes(agent.id) && agent.installed);
-  } else {
-    selectedAgents = await selectAgents(agents);
-  }
-
-  if (selectedAgents.length === 0) {
-    warn('No agents selected');
+  if (recipes.length === 0) {
+    console.log('\n  No recipes available.\n');
     return;
   }
 
-  const cwd = options.cwd || (await inputCwd());
+  console.log('\n  Available Recipes\n');
 
-  const adapters: AgentAdapter[] = selectedAgents.map((agent) => {
-    if (agent.id === 'claude') return new ClaudeAdapter();
-    return new CodexAdapter();
-  });
+  const { selected } = await inquirer.prompt([{
+    type: 'list',
+    name: 'selected',
+    message: 'Select a recipe to install',
+    choices: recipes.map((r) => ({
+      name: r.name + ' — ' + r.description + (r.schedule ? ' [' + r.schedule + ']' : ''),
+      value: r.name,
+    })),
+  }]);
 
-  console.log();
-  info('Creating files...');
+  const tasksDir = path.join(homedir(), '.claude', 'scheduled-tasks');
+  const targetDir = path.join(tasksDir, selected);
 
-  const targets: Record<string, string> = {};
-
-  for (const adapter of adapters) {
-    try {
-      const createdPath = await adapter.write(skill, { cwds: [cwd] });
-      success(adapter.agentName + '  ' + createdPath);
-      targets[adapter.agentId] = createdPath;
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      warn(adapter.agentName + '  ' + message);
-    }
+  if (existsSync(targetDir)) {
+    const { overwrite } = await inquirer.prompt([{
+      type: 'confirm',
+      name: 'overwrite',
+      message: '"' + selected + '" already exists. Overwrite?',
+      default: false,
+    }]);
+    if (!overwrite) return;
   }
 
-  addToLock(meta.name, {
-    source: repoSlug,
-    installed_at: new Date().toISOString(),
-    targets
-  });
+  const dlSpinner = ora('Installing ' + selected + '...').start();
+  try {
+    const files = await fetchRecipeFiles(selected);
+    mkdirSync(targetDir, { recursive: true });
+    for (const [filename, content] of Object.entries(files)) {
+      writeFileSync(path.join(targetDir, filename), content, 'utf-8');
+    }
+    dlSpinner.succeed('Installed to ~/.claude/scheduled-tasks/' + selected + '/');
 
-  success('Lock file updated');
-  console.log();
-  info('Done! Installed ' + meta.name + ' → ' + selectedAgents.length + ' agent(s)');
+    const skillContent = files['SKILL.md'];
+    if (skillContent) {
+      const { meta } = parseSkillMd(skillContent);
+      if (meta.schedule) {
+        console.log('\n  Schedule: ' + meta.schedule);
+        console.log('  Configure in Claude Code Desktop → Scheduled Tasks\n');
+      }
+    }
+  } catch (err: any) {
+    dlSpinner.fail(err.message);
+    process.exit(1);
+  }
 }
